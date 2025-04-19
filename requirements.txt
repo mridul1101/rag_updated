@@ -62,6 +62,7 @@ langchain==0.3.23
 langchain-community==0.3.21
 langchain-core==0.3.54
 langchain-text-splitters==0.3.8
+langchain-google-genai==2.1.2
 langsmith==0.3.32
 lazy_loader==0.4
 lxml==5.3.2
