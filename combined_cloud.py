@@ -4,7 +4,8 @@ import tempfile
 from werkzeug.utils import secure_filename
 import time
 from PIL import Image
-import google.generativeai as genai
+# import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI
 import fitz  # PyMuPDF for PDF handling
 import easyocr
 import ssl
@@ -36,8 +37,14 @@ def initialize_rag_system():
     return rag
 
 # Initialize Gemini for image processing and summarization
-genai.configure(api_key="AIzaSyDd02LbjboeF8AeRX46oTW8Z9gc1Yx6YCk")
-model = genai.GenerativeModel('gemini-2.0-flash')
+# genai.configure(api_key="AIzaSyDd02LbjboeF8AeRX46oTW8Z9gc1Yx6YCk")
+# model = genai.GenerativeModel('gemini-2.0-flash')
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.0-flash",
+    temperature=0.7,
+    google_api_key="AIzaSyDd02LbjboeF8AeRX46oTW8Z9gc1Yx6YCk"
+)
+
 
 # Initialize EasyOCR reader
 @st.cache_resource
@@ -77,29 +84,49 @@ def extract_text_from_image(image_bytes):
         st.error(f"OCR Error: {e}")
         return ""
 
-def summarize_text(text, title):
-    """Generate a summary of the extracted text using Gemini"""
-    if not text or len(text.strip()) < 100:  # Skip summarization for very short texts
-        return text
+# def summarize_text(text, title):
+#     """Generate a summary of the extracted text using Gemini"""
+#     if not text or len(text.strip()) < 100:  # Skip summarization for very short texts
+#         return text
     
+#     try:
+#         prompt = f"""
+#         Please summarize the following text extracted from the document titled '{title}'. 
+#         Maintain key facts, figures, and important information:
+        
+#         {text[:10000]}  # Limiting to first 10000 chars to avoid token limits
+#         """
+        
+#         response = model.generate_content(prompt)
+#         summary = response.text
+        
+#         # Combine summary with original text to maintain searchability
+#         result = f"SUMMARY: {summary}\n\nORIGINAL TEXT: {text[:5000]}"  # Include partial original text
+#         return result
+#     except Exception as e:
+#         st.error(f"Summarization Error: {e}")
+#         return text
+
+def summarize_text(text, title):
+    """Generate a summary of the extracted text using Gemini via LangChain"""
+    if not text or len(text.strip()) < 100:
+        return text
+
     try:
         prompt = f"""
         Please summarize the following text extracted from the document titled '{title}'. 
         Maintain key facts, figures, and important information:
         
-        {text[:10000]}  # Limiting to first 10000 chars to avoid token limits
+        {text[:10000]}
         """
+        response = llm.invoke(prompt)
+        summary = response.content if hasattr(response, "content") else response
         
-        response = model.generate_content(prompt)
-        summary = response.text
-        
-        # Combine summary with original text to maintain searchability
-        result = f"SUMMARY: {summary}\n\nORIGINAL TEXT: {text[:5000]}"  # Include partial original text
-        return result
+        return f"SUMMARY: {summary}\n\nORIGINAL TEXT: {text[:5000]}"
     except Exception as e:
         st.error(f"Summarization Error: {e}")
         return text
-
+        
 def process_files(uploaded_files):
     saved_paths = []
     processed_files = []
