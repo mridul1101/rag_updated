@@ -619,7 +619,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 # Streamlit page config
 st.set_page_config(page_title="RAG Chat", layout="wide")
-st.title("📘 RAG-based Document QA System")
+st.title("📘 RAG-SWAT")
 
 # Create temp folder for uploaded files
 UPLOAD_FOLDER = tempfile.mkdtemp()
