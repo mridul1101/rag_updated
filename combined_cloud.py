@@ -168,10 +168,73 @@ def summarize_text(text, title):
         st.error(f"Summarization Error: {e}")
         return text
 
+
+def process_pdf(file_path, filename):
+    """Enhanced PDF processing with OCR fallback"""
+    try:
+        doc = fitz.open(file_path)
+        pdf_text = ""
+        needs_ocr = False
+        
+        # First attempt: try to extract text normally
+        for page in doc:
+            page_text = page.get_text()
+            if page_text.strip():  # If we got some text
+                pdf_text += page_text
+            else:
+                needs_ocr = True
+                break
+        
+        doc.close()
+        
+        # If we detected pages needing OCR or got very little text
+        if needs_ocr or len(pdf_text.strip()) < 100:
+            return process_pdf_with_ocr(file_path, filename)
+        
+        return pdf_text, False
+    
+    except Exception as e:
+        st.error(f"Error reading PDF: {e}")
+        return process_pdf_with_ocr(file_path, filename)
+
+def process_pdf_with_ocr(file_path, filename):
+    """Process PDF using OCR for image-based pages"""
+    try:
+        doc = fitz.open(file_path)
+        ocr_text = ""
+        reader = get_ocr_reader()
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap()
+            
+            # Convert pixmap to bytes for OCR
+            img_bytes = pix.tobytes("png")
+            
+            # Save temporary image for OCR
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp:
+                temp.write(img_bytes)
+                temp_path = temp.name
+            
+            # Perform OCR
+            result = reader.readtext(temp_path)
+            page_text = "\n".join([entry[1] for entry in result])
+            ocr_text += f"Page {page_num+1}:\n{page_text}\n\n"
+            
+            # Clean up
+            os.unlink(temp_path)
+        
+        doc.close()
+        return ocr_text, True
+    
+    except Exception as e:
+        st.error(f"OCR processing failed: {e}")
+        return "", False
+    
 def process_files(uploaded_files):
     saved_paths = []
     processed_files = []
-    summaries = []  # To store summaries for display
+    summaries = []  # Initialize summaries list
     
     for uploaded_file in uploaded_files:
         if uploaded_file and allowed_file(uploaded_file.name):
@@ -184,7 +247,7 @@ def process_files(uploaded_files):
             file_ext = filename.rsplit('.', 1)[1].lower()
             summary = None
             is_image = file_ext in ['png', 'jpg', 'jpeg', 'bmp', 'tiff']
-            
+
             if is_image:
                 # Process image files
                 extracted_text = extract_text_from_image(uploaded_file.getvalue())
@@ -228,29 +291,40 @@ def process_files(uploaded_files):
                     summary = generate_short_summary(extracted_text, filename, is_image=True)
             
             elif file_ext == 'pdf':
-                # Process PDF files
-                try:
-                    doc = fitz.open(file_path)
-                    pdf_text = ""
-                    for page in doc:
-                        pdf_text += page.get_text()
-                    doc.close()
-                    
-                    if pdf_text:
-                        summary = generate_short_summary(pdf_text, filename)
-                except Exception as e:
-                    st.error(f"Error reading PDF: {e}")
+                # Process PDF with enhanced handling
+                pdf_text, used_ocr = process_pdf(file_path, filename)
                 
-                saved_paths.append(file_path)
-                st.session_state.document_names.append(filename)
-                processed_files.append({
-                    "original_name": filename,
-                    "processed_name": filename,
-                    "type": "document"
-                })
+                if pdf_text:
+                    if used_ocr:
+                        text_filename = f"{filename}_OCR.txt"
+                        text_path = os.path.join(UPLOAD_FOLDER, text_filename)
+                        
+                        with open(text_path, 'w', encoding='utf-8') as text_file:
+                            text_file.write(pdf_text)
+                        
+                        saved_paths.append(text_path)
+                        st.session_state.document_names.append(f"{filename} (PDF via OCR)")
+                        processed_files.append({
+                            "original_name": filename,
+                            "processed_name": text_filename,
+                            "type": "pdf_ocr"
+                        })
+                    else:
+                        saved_paths.append(file_path)
+                        st.session_state.document_names.append(filename)
+                        processed_files.append({
+                            "original_name": filename,
+                            "processed_name": filename,
+                            "type": "document"
+                        })
+                    
+                    summary = generate_short_summary(pdf_text, filename)
+                else:
+                    st.warning(f"Could not extract text from PDF: {filename}")
+                    continue
             
+            # For other document types (txt, docx, etc.)
             else:
-                # Process other document types
                 saved_paths.append(file_path)
                 st.session_state.document_names.append(filename)
                 processed_files.append({
@@ -268,6 +342,7 @@ def process_files(uploaded_files):
                     except:
                         pass
             
+            # Add summary to summaries list if available
             if summary:
                 summaries.append({
                     "filename": filename,
@@ -275,7 +350,7 @@ def process_files(uploaded_files):
                     "type": "image" if is_image else "document"
                 })
     
-    return saved_paths, processed_files, summaries
+    return saved_paths, processed_files, summaries  # Make sure to return all three
 
 def display_chat_message(role, content, sources=None):
     """Display a chat message with appropriate styling"""
