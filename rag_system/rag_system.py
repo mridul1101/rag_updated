@@ -103,3 +103,4 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"Error during query: {str(e)}")
             return {"error": str(e), "query_time": time.time() - start_time}
+

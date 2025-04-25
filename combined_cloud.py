@@ -4,7 +4,6 @@ import tempfile
 from werkzeug.utils import secure_filename
 import time
 from PIL import Image
-from langchain_google_genai import ChatGoogleGenerativeAI
 import fitz  # PyMuPDF for PDF handling
 import easyocr
 import ssl
@@ -12,38 +11,33 @@ from io import BytesIO
 import requests
 from transformers import pipeline
 
-# Import RAG system components
-from rag_system.rag_system import RAGSystem
+# Import enhanced RAG system
+from rag_system.enhanced_rag_system import EnhancedRAGSystem
 
 # SSL configuration for EasyOCR
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # Streamlit page config
-st.set_page_config(page_title="RAG Chat", layout="wide")
-st.title("📘 RAG-SWAT")
+st.set_page_config(page_title="RAG-SWAT with Web Search", layout="wide")
+st.title("📘 RAG-SWAT with Web Search")
 
 # Create temp folder for uploaded files
 UPLOAD_FOLDER = tempfile.mkdtemp()
 ALLOWED_EXTENSIONS = {'pdf', 'txt', 'docx', 'png', 'jpg', 'jpeg', 'bmp', 'tiff'}
 
-# Initialize the RAG system
+# Initialize the enhanced RAG system
 @st.cache_resource
 def initialize_rag_system():
-    rag = RAGSystem(
-        api_key="AIzaSyDd02LbjboeF8AeRX46oTW8Z9gc1Yx6YCk",
+    api_key = "AIzaSyDd02LbjboeF8AeRX46oTW8Z9gc1Yx6YCk"  # Your Gemini API key
+    rag = EnhancedRAGSystem(
+        api_key=api_key,
         model_name="gemini-2.0-flash",
-        embedding_model="all-MiniLM-L6-v2"
+        embedding_model="all-MiniLM-L6-v2",
+        confidence_threshold=0.  # Adjust this threshold as needed
     )
     return rag
 
-# Initialize Gemini for text processing and summarization
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    temperature=0.7,
-    google_api_key="AIzaSyDd02LbjboeF8AeRX46oTW8Z9gc1Yx6YCk"
-)
-
-# Initialize EasyOCR reader
+# Initialize OCR reader
 @st.cache_resource
 def get_ocr_reader():
     return easyocr.Reader(['en'])
@@ -52,14 +46,13 @@ def get_ocr_reader():
 @st.cache_resource
 def get_vlm_pipeline():
     try:
-        # Using a smaller model for faster inference
         vlm = pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
         return vlm
     except Exception as e:
         st.error(f"Failed to load VLM: {e}")
         return None
 
-# Initialize session state for documents and chat history
+# Initialize session state
 if 'all_documents' not in st.session_state:
     st.session_state.all_documents = []
 if 'document_names' not in st.session_state:
@@ -70,6 +63,8 @@ if 'processed_files' not in st.session_state:
     st.session_state.processed_files = []
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
+if 'web_search_mode' not in st.session_state:
+    st.session_state.web_search_mode = "auto"  # Options: "auto", "always", "never"
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -115,11 +110,14 @@ def describe_image(image_bytes):
         return ""
 
 def generate_short_summary(text, title, is_image=False):
-    """Generate a very short summary (max 100 words) using Gemini"""
+    """Generate a very short summary using Gemini"""
     if not text or len(text.strip()) < 10:
         return "Not enough content to generate summary"
     
     try:
+        # Use the LLM from the RAG system to generate summary
+        rag = initialize_rag_system()
+        
         if is_image:
             prompt = f"""
             Please provide a very short summary (maximum 100 words) of this image titled '{title}' 
@@ -135,7 +133,8 @@ def generate_short_summary(text, title, is_image=False):
             {text[:5000]}
             """
         
-        response = llm.invoke(prompt)
+        # Direct LLM call for summarization
+        response = rag.llm.invoke(prompt)
         summary = response.content if hasattr(response, "content") else response
         
         # Ensure summary is within word limit
@@ -149,25 +148,25 @@ def generate_short_summary(text, title, is_image=False):
         return "Summary unavailable"
 
 def summarize_text(text, title):
-    """Generate a summary of the extracted text using Gemini via LangChain"""
+    """Generate a summary of the extracted text"""
     if not text or len(text.strip()) < 100:
         return text
 
     try:
+        rag = initialize_rag_system()
         prompt = f"""
         Please summarize the following text extracted from the document titled '{title}'. 
         Maintain key facts, figures, and important information:
         
         {text[:10000]}
         """
-        response = llm.invoke(prompt)
+        response = rag.llm.invoke(prompt)
         summary = response.content if hasattr(response, "content") else response
         
         return f"SUMMARY: {summary}\n\nORIGINAL TEXT: {text[:5000]}"
     except Exception as e:
         st.error(f"Summarization Error: {e}")
         return text
-
 
 def process_pdf(file_path, filename):
     """Enhanced PDF processing with OCR fallback"""
@@ -230,11 +229,11 @@ def process_pdf_with_ocr(file_path, filename):
     except Exception as e:
         st.error(f"OCR processing failed: {e}")
         return "", False
-    
+
 def process_files(uploaded_files):
     saved_paths = []
     processed_files = []
-    summaries = []  # Initialize summaries list
+    summaries = []
     
     for uploaded_file in uploaded_files:
         if uploaded_file and allowed_file(uploaded_file.name):
@@ -350,9 +349,9 @@ def process_files(uploaded_files):
                     "type": "image" if is_image else "document"
                 })
     
-    return saved_paths, processed_files, summaries  # Make sure to return all three
+    return saved_paths, processed_files, summaries
 
-def display_chat_message(role, content, sources=None):
+def display_chat_message(role, content, sources=None, is_web_search=False):
     """Display a chat message with appropriate styling"""
     if role == "user":
         with st.chat_message("user", avatar="🧑"):
@@ -366,19 +365,30 @@ def display_chat_message(role, content, sources=None):
                     for i, source in enumerate(sources, 1):
                         doc_name = source['metadata'].get('document_name', 'Unknown')
                         
-                        if "(OCR)" in doc_name:
+                        # Choose appropriate icon based on source
+                        if "Web:" in doc_name:
+                            icon = "🌐"
+                        elif "(OCR)" in doc_name:
                             icon = "🖼️ (Text from Image)"
                         elif "(Image Description)" in doc_name:
                             icon = "🖼️ (Image Description)"
                         else:
                             icon = "📄"
                         
-                        st.markdown(f"**{icon} Source {i}:** *{doc_name}*")
+                        # For web sources, display URL if available
+                        if "Web:" in doc_name and "source_url" in source['metadata']:
+                            st.markdown(f"**{icon} Source {i}:** *{doc_name}* - [Link]({source['metadata']['source_url']})")
+                        else:
+                            st.markdown(f"**{icon} Source {i}:** *{doc_name}*")
                         
                         content = source['content']
                         if len(content) > 500:
                             content = content[:500] + "..."
                         st.code(content)
+            
+            # Show an indication if result came from web search
+            if is_web_search:
+                st.info("ℹ️ This answer was generated from web search results because I couldn't find enough information in your documents.")
 
 # Get RAG instance
 rag = initialize_rag_system()
@@ -422,6 +432,23 @@ with st.sidebar:
         else:
             st.warning("Please upload files first")
     
+    # Web search mode selection
+    st.subheader("🌐 Web Search Settings")
+    web_search_mode = st.radio(
+        "When to use web search:",
+        options=["Auto (when documents don't have answers)", "Always", "Never"],
+        index=0,
+        key="web_search_radio"
+    )
+    
+    # Map radio selection to state
+    if web_search_mode == "Auto (when documents don't have answers)":
+        st.session_state.web_search_mode = "auto"
+    elif web_search_mode == "Always":
+        st.session_state.web_search_mode = "always"
+    else:
+        st.session_state.web_search_mode = "never"
+    
     # Display processed documents
     if st.session_state.get("documents_processed", False):
         st.subheader("📚 Processed Documents")
@@ -460,36 +487,75 @@ with st.sidebar:
         st.rerun()
 
 # Main chat interface
-st.subheader("💬 Chat with Your Documents")
+st.subheader("💬 Chat with Your Documents + Web")
 
 # Display chat history
 for chat in st.session_state.chat_history[-10:]:  # Show last 10 messages
-    display_chat_message(chat["role"], chat["content"], chat.get("sources"))
+    display_chat_message(
+        chat["role"], 
+        chat["content"], 
+        chat.get("sources"),
+        chat.get("from_web", False)
+    )
 
 # Chat input
-user_question = st.chat_input("Ask a question about your documents...")
+user_question = st.chat_input("Ask a question about your documents or anything else...")
 
 if user_question:
     # Add user question to chat history and display
     st.session_state.chat_history.append({"role": "user", "content": user_question})
     display_chat_message("user", user_question)
     
+    # Determine if we should force web search
+    force_web_search = st.session_state.web_search_mode == "always"
+    skip_web_search = st.session_state.web_search_mode == "never"
+    
     # Get and display assistant response
-    with st.spinner("..."):
+    with st.spinner("Thinking..."):
         try:
             start_time = time.time()
-            result = rag.query(user_question)
+            
+            if skip_web_search:
+                # Only use RAG, even if it has low confidence
+                result = rag._execute_rag_query(user_question)
+                if "error" in result:
+                    # If RAG fails, show a helpful message
+                    result = {
+                        "answer": "I couldn't find an answer in your documents. You might want to try enabling web search to expand my knowledge.",
+                        "sources": [],
+                        "query_time": time.time() - start_time,
+                        "from_web": False
+                    }
+            else:
+                # Use the enhanced query function with auto web search fallback
+                result = rag.query(user_question, force_web_search=force_web_search)
+            
             query_time = round(time.time() - start_time, 2)
             
             # Add assistant response to chat history
-            st.session_state.chat_history.append({
+            chat_entry = {
                 "role": "assistant",
                 "content": result['answer'],
-                "sources": result['sources']
-            })
+                "sources": result.get('sources', []),
+                "from_web": result.get('from_web', False),
+                "query_time": query_time
+            }
+            st.session_state.chat_history.append(chat_entry)
             
             # Display the response
-            display_chat_message("assistant", result['answer'], result['sources'])
-            st.success(f"⏱️ Response time: {query_time} seconds")
+            display_chat_message(
+                "assistant", 
+                result['answer'], 
+                result.get('sources', []),
+                result.get('from_web', False)
+            )
+            
+            # Show response time with appropriate icon
+            if result.get('from_web', False):
+                st.success(f"⏱️ Response time: {query_time} seconds (🌐 Web Search)")
+            else:
+                st.success(f"⏱️ Response time: {query_time} seconds (📚 Documents)")
+                
         except Exception as e:
             st.error(f"Error processing query: {e}")
+
